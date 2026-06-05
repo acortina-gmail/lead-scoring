@@ -42,3 +42,9 @@ variable "ar_cleanup_dry_run" {
   default     = false
   description = "If true, AR cleanup policies only log what they WOULD delete instead of deleting. Set true to preview first."
 }
+
+variable "alert_emails" {
+  type        = list(string)
+  default     = []
+  description = "Emails to notify when a Vertex training pipeline FAILS. Empty list = no alerting (resources skipped)."
+}

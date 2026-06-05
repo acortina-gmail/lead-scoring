@@ -13,6 +13,7 @@ locals {
     "bigquery.googleapis.com",
     "storage.googleapis.com",
     "compute.googleapis.com",
+    "monitoring.googleapis.com",
   ]
 }
 
@@ -65,6 +66,55 @@ resource "google_artifact_registry_repository" "images" {
 
   # Set true to preview deletions in the AR logs without actually deleting.
   cleanup_policy_dry_run = var.ar_cleanup_dry_run
+
+  depends_on = [google_project_service.enabled]
+}
+
+# --- Alerting: email someone when a Vertex training pipeline FAILS -------------
+# Decoupled from the pipeline code: Cloud Monitoring watches Vertex's pipeline-level
+# state events (logName .../pipeline_job_events, jsonPayload.state). Skipped entirely
+# when var.alert_emails is empty.
+
+resource "google_monitoring_notification_channel" "email" {
+  for_each     = toset(var.alert_emails)
+  project      = var.project_id
+  display_name = "lead-scoring alerts → ${each.value}"
+  type         = "email"
+  labels       = { email_address = each.value }
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_monitoring_alert_policy" "pipeline_failed" {
+  count        = length(var.alert_emails) > 0 ? 1 : 0
+  project      = var.project_id
+  display_name = "Vertex training pipeline failed (lead-scoring)"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "PipelineJob state = FAILED"
+    # Pipeline-level failure event for our training pipeline only (verified against
+    # the real log schema). Implicit AND across the lines.
+    condition_matched_log {
+      filter = <<-EOT
+        logName="projects/${var.project_id}/logs/aiplatform.googleapis.com%2Fpipeline_job_events"
+        jsonPayload.pipelineName="lead-scoring-train"
+        jsonPayload.state="PIPELINE_STATE_FAILED"
+      EOT
+    }
+  }
+
+  # Required for log-match policies; throttle repeated notifications.
+  alert_strategy {
+    notification_rate_limit { period = "300s" }
+  }
+
+  notification_channels = [for c in google_monitoring_notification_channel.email : c.id]
+
+  documentation {
+    subject = "❌ Vertex training pipeline failed — lead-scoring"
+    content = "A lead-scoring training PipelineJob reached PIPELINE_STATE_FAILED. Check the Vertex AI > Pipelines console for the failed step and logs."
+  }
 
   depends_on = [google_project_service.enabled]
 }

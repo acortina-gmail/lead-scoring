@@ -27,6 +27,11 @@ def main() -> None:
     p.add_argument("--training-image", default=None)
     p.add_argument("--env", default=os.environ.get("ENV", config.ENV),
                    help="logical environment (dev|prod) — namespaces the GCS model paths")
+    p.add_argument("--cache", action="store_true",
+                   help="enable Vertex step caching. OFF by default so a retrain always "
+                        "trains: caching keys on the table REFERENCE, not its contents, so "
+                        "with it on a re-run on the same table skips training even after the "
+                        "data changed. Only use for fast dev iteration on unchanged data.")
     args = p.parse_args()
 
     env = args.env
@@ -65,7 +70,7 @@ def main() -> None:
             "gate_min_abs": config.PROMOTION["min_abs"],
             "gate_max_regression": config.PROMOTION["max_regression"],
         },
-        enable_caching=True,
+        enable_caching=args.cache,
     )
     job.submit()
     print(f"submitted Vertex pipeline job ({env}):", job.resource_name)
