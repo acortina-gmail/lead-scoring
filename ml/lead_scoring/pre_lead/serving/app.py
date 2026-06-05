@@ -5,14 +5,21 @@ startup, routes each incoming lead to the right segment model, applies the SAME
 ``leadscoring.preprocess`` + the saved ``ColumnTransformer`` (no train/serve
 skew), and returns a score in [0, 1] for ranking commercial calls.
 
+The live model is also hot-swapped without a redeploy: requests trigger a throttled
+GCS re-check (MODEL_RELOAD_CHECK_SECONDS) and any freshly-promoted artifact is loaded
+in place. POST /reload forces it immediately (e.g. right after a retrain).
+
 Env:
-  GCS_MODEL_PREFIX   gs://<bucket>/models   (where the pipeline wrote the joblibs)
-  PORT               provided by Cloud Run (default 8080)
+  GCS_MODEL_PREFIX            gs://<bucket>/models  (where the pipeline wrote the joblibs)
+  MODEL_RELOAD_CHECK_SECONDS  min seconds between live-model re-checks (default 300; 0 disables)
+  PORT                        provided by Cloud Run (default 8080)
 """
 from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 
 import joblib
 import pandas as pd
@@ -22,31 +29,94 @@ from pydantic import BaseModel
 from leadscoring import config, preprocess
 
 app = FastAPI(title="OBS lead scoring", version="1.0")
+
+# In-memory artifacts + the GCS object generation each was loaded from, so we can
+# detect a freshly-promoted model and skip re-downloading an unchanged one.
 MODELS: dict[str, dict] = {}
+_GENERATIONS: dict[str, int] = {}
+
+# Self-refresh. The model loads at startup, but a (e.g. monthly) retrain promotes
+# a new joblib to GCS while this container keeps running. Instead of needing a
+# redeploy, we re-check GCS at most once per CHECK_INTERVAL and hot-swap any
+# changed segment. The check is driven by incoming requests (see maybe_reload),
+# not a background timer, so it still fires under Cloud Run's idle-CPU throttling.
+CHECK_INTERVAL = int(os.environ.get("MODEL_RELOAD_CHECK_SECONDS", "300"))
+_reload_lock = threading.Lock()
+_last_check = 0.0
 
 
-def _download(uri: str) -> str:
+def _live_blob(uri: str):
+    """The GCS blob behind a live-model URI (fetches metadata), or None if absent."""
     from google.cloud import storage
 
-    bkt, _, blob = uri[len("gs://"):].partition("/")
-    fd, local = tempfile.mkstemp(suffix=".joblib")
-    os.close(fd)
-    storage.Client(project=config.PROJECT_ID).bucket(bkt).blob(blob).download_to_filename(local)
-    return local
+    bkt, _, name = uri[len("gs://"):].partition("/")
+    return storage.Client(project=config.PROJECT_ID).bucket(bkt).get_blob(name)
+
+
+def _load_segment(segment: str, *, force: bool) -> bool:
+    """(Re)load one segment's LIVE artifact if its GCS generation changed.
+
+    Returns True if a (new) model was loaded. Always the promoted 'live' artifact
+    (config.MODELS_PREFIX honours GCS_MODEL_PREFIX + ENV); never 'candidate'.
+    """
+    uri = config.model_uri(segment, stage="live")
+    try:
+        if not uri.startswith("gs://"):  # local path (tests / dev)
+            if not force and segment in MODELS:
+                return False
+            MODELS[segment] = joblib.load(uri)
+            return True
+
+        blob = _live_blob(uri)
+        if blob is None:
+            if force:
+                print(f"WARNING: {segment} model not found at {uri}")
+            return False
+        if not force and _GENERATIONS.get(segment) == blob.generation:
+            return False  # already serving this exact object
+
+        fd, local = tempfile.mkstemp(suffix=".joblib")
+        os.close(fd)
+        blob.download_to_filename(local)
+        MODELS[segment] = joblib.load(local)  # atomic rebind of the in-memory ref
+        _GENERATIONS[segment] = blob.generation
+        os.remove(local)
+        print(f"loaded {segment} model from {uri} (generation {blob.generation})")
+        return True
+    except Exception as e:  # one bad/missing segment must not take down the others
+        print(f"WARNING: could not load {segment} model from {uri}: {e}")
+        return False
+
+
+def reload_models(*, force: bool) -> list[str]:
+    """Check every segment; return the list that was (re)loaded."""
+    return [s for s in config.SEGMENTS if _load_segment(s, force=force)]
+
+
+def maybe_reload() -> None:
+    """Throttled, request-driven refresh: at most one GCS check per CHECK_INTERVAL,
+    hot-swapping any segment whose live model changed. A no-op metadata check when
+    nothing changed (~ms); only downloads on an actual new generation."""
+    global _last_check
+    if CHECK_INTERVAL <= 0:
+        return
+    now = time.monotonic()
+    if now - _last_check < CHECK_INTERVAL:
+        return
+    if not _reload_lock.acquire(blocking=False):
+        return  # another request is already checking
+    try:
+        _last_check = now
+        changed = reload_models(force=False)
+        if changed:
+            print(f"auto-reload: refreshed {changed}")
+    finally:
+        _reload_lock.release()
 
 
 @app.on_event("startup")
-def load_models() -> None:
-    for segment in config.SEGMENTS:
-        # Always serve the promoted 'live' artifact (config.MODELS_PREFIX already
-        # honours GCS_MODEL_PREFIX + ENV); never the unvalidated 'candidate'.
-        uri = config.model_uri(segment, stage="live")
-        try:
-            local = _download(uri) if uri.startswith("gs://") else uri
-            MODELS[segment] = joblib.load(local)
-            print(f"loaded {segment} model from {uri}")
-        except Exception as e:  # don't crash all segments if one is missing
-            print(f"WARNING: could not load {segment} model from {uri}: {e}")
+def _startup() -> None:
+    reload_models(force=True)
 
 
 class ScoreRequest(BaseModel):
@@ -72,13 +142,23 @@ def root():
 
 @app.get("/health")
 def health():
+    maybe_reload()
     if not MODELS:
         raise HTTPException(503, "no models loaded")
     return {"status": "ok", "segments": list(MODELS.keys())}
 
 
+@app.post("/reload")
+def reload_endpoint():
+    """Force an immediate reload of all live models — e.g. pinged right after a
+    retrain promotes new artifacts, so the live API refreshes without a redeploy.
+    Returns which segments were (re)loaded."""
+    return {"reloaded": reload_models(force=True), "segments": list(MODELS.keys())}
+
+
 @app.post("/score")
 def score(payload: dict):
+    maybe_reload()
     if not MODELS:
         raise HTTPException(503, "no models loaded")
     segment = config.route_segment(payload)

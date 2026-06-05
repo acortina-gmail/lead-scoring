@@ -24,3 +24,21 @@ variable "force_destroy_bucket" {
   default     = true
   description = "Allow `terraform destroy` to delete the bucket even if it has objects (handy for a test env)."
 }
+
+variable "ar_keep_recent" {
+  type        = number
+  default     = 5
+  description = "Artifact Registry cleanup: keep this many most-recent versions of each image (for rollback)."
+}
+
+variable "ar_untagged_ttl_days" {
+  type        = number
+  default     = 7
+  description = "Artifact Registry cleanup: delete UNTAGGED images older than this many days (the digests left behind by each :latest push)."
+}
+
+variable "ar_cleanup_dry_run" {
+  type        = bool
+  default     = false
+  description = "If true, AR cleanup policies only log what they WOULD delete instead of deleting. Set true to preview first."
+}
