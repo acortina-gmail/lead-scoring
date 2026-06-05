@@ -39,7 +39,8 @@ BASE_IMAGE = os.environ.get(
 @dsl.component(base_image=BASE_IMAGE)
 def ingest(table: str, project: str, data: Output[Dataset]):
     """Load the BigQuery training table to parquet."""
-    from leadscoring import config, data as dataio
+    from leadscoring import config
+    from leadscoring import data as dataio
 
     config.PROJECT_ID = project
     df = dataio.load(table_ref=table)

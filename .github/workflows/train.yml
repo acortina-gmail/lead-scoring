@@ -1,0 +1,42 @@
+name: Train
+
+# Manual retrain. Compiles + submits the Vertex AI pipeline, which writes
+# candidate models and promotes them to live only if the soft gate passes
+# (gate logic lives in the pipeline, not here). Kept separate from deploy.yml
+# because a Vertex run is slow and costly — you don't want it on every merge.
+#
+# Serving picks up a freshly-promoted model only after a redeploy (run Deploy,
+# or deploy/03_deploy_serving.sh).
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment"
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+defaults:
+  run:
+    working-directory: ml/lead_scoring/pre_lead
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    # prod retrains also require approval via the prod environment; dev has no
+    # protection rules (GitHub auto-creates it on first use).
+    environment: ${{ inputs.env == 'prod' && 'prod' || 'dev' }}
+    env:
+      ENV: ${{ inputs.env }}
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Compile + submit Vertex training pipeline
+        run: ./deploy/02_run_pipeline.sh

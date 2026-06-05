@@ -21,3 +21,22 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["leadscoring*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Notebooks + generated/IaC files aren't linted as library code.
+extend-exclude = ["notebooks", "terraform", "pipeline.json"]
+
+[tool.ruff.lint]
+# pycodestyle errors (E), pyflakes (F), import sorting (I). Lean rule set to start.
+select = ["E", "F", "I"]
+# E501 (line length) is off: evaluate.py / train_pipeline.py embed long HTML-report
+# f-strings that read worse wrapped. F-rules still catch real bugs (unused/undefined).
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["leadscoring"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
