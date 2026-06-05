@@ -9,7 +9,6 @@ Ported from the validated notebook ``entrenar_final``:
 """
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import scipy.stats as st
 import xgboost as xgb

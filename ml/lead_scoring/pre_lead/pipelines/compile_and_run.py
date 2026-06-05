@@ -38,9 +38,8 @@ def main() -> None:
     )
     os.environ["TRAINING_IMAGE"] = image  # consumed at import time below
 
-    from kfp import compiler
-
     import train_pipeline  # noqa: E402  (same dir; imported after env is set)
+    from kfp import compiler
 
     compiler.Compiler().compile(train_pipeline.lead_scoring_pipeline, args.output)
     print(f"compiled -> {args.output}  (base image: {image})")

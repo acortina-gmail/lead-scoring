@@ -17,6 +17,11 @@ override.tf.json
 **/pipeline.json
 **/model_2_transformers/
 
+# Secrets — GCP service-account keys must never be committed (use GitHub secrets)
+**/key.json
+**/*-sa-key.json
+**/service-account*.json
+
 # Editor / OS / local
 .claude/
 .vscode/
