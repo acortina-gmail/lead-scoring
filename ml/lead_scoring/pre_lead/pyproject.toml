@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leadscoring"
+version = "0.1.0"
+description = "OBS lead-scoring: shared preprocessing/train/eval for Vertex + Cloud Run"
+requires-python = ">=3.12"
+# Runtime deps are pinned per-image (training/requirements.txt, serving/requirements.txt)
+# to keep each image minimal; this list is the lib's logical dependency set.
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "xgboost",
+    "scipy",
+    "joblib",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["leadscoring*"]

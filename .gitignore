@@ -1,0 +1,24 @@
+# Python
+**/__pycache__/
+*.py[cod]
+**/*.egg-info/
+**/.venv/
+.python-version
+
+# Terraform (never commit state or the provider cache; lock file IS committed)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+
+# Generated
+**/pipeline.json
+**/model_2_transformers/
+
+# Editor / OS / local
+.claude/
+.vscode/
+.idea/
+.DS_Store
