@@ -24,6 +24,9 @@ def main() -> None:
     p.add_argument("--output", default="pipeline.json")
     p.add_argument("--n-iter", type=int, default=60)
     p.add_argument("--n-seeds", type=int, default=5)
+    p.add_argument("--daily-volume", type=int, default=250,
+                   help="avg total leads/day; split per segment by training-row share "
+                        "to scale the capacity table's Leads/dia + Conversiones/dia.")
     p.add_argument("--training-image", default=None)
     p.add_argument("--env", default=os.environ.get("ENV", config.ENV),
                    help="logical environment (dev|prod) — namespaces the GCS model paths")
@@ -66,6 +69,7 @@ def main() -> None:
             "models_prefix": models_prefix,
             "n_iter": args.n_iter,
             "n_seeds": args.n_seeds,
+            "daily_volume": args.daily_volume,
             "gate_metric": config.PROMOTION["metric"],
             "gate_min_abs": config.PROMOTION["min_abs"],
             "gate_max_regression": config.PROMOTION["max_regression"],
