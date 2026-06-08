@@ -1,4 +1,4 @@
-# lead scoring — `pre_lead` (funnel stage 1)
+# lead scoring — `pre_lead` (stage 1)
 
 Segmented lead-scoring rankers (segments **`landing`** / unbounce and **`main`** / web)
 to prioritize commercial calls, scored **at form submit** (the first funnel stage).
