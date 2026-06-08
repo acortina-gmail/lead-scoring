@@ -214,11 +214,25 @@ ENV=prod ./deploy/03_deploy_serving.sh
 ```
 
 ### B5. Vía CI/CD (GitHub Actions) — automático
-- **PR**: corre `ruff` + `pytest` (`.github/workflows/ci.yml`).
-- **Merge a `main`** (cambios en `ml/lead_scoring/pre_lead/**`): build + deploy a **dev**
-  automático; **prod** queda detrás de una **aprobación manual** (GitHub Environment `prod`).
-- **Reentrenar**: workflow manual `train.yml` (`workflow_dispatch`, elige `dev`/`prod`).
-- Requiere el secret `GCP_SA_KEY` en el repo. Detalle en [`deploy/CICD.md`](deploy/CICD.md).
+El flujo de integración entrena **y** despliega en cada push (`deploy.yml`):
+```
+push develop → quality(ruff+pytest) → build → train(dev, espera) → deploy(dev)
+push main    → quality → build → [APROBAR prod] → train(prod, espera) → deploy(prod)
+```
+- El job `train` corre el pipeline de Vertex con `--wait`: se queda **"running"** hasta
+  que Vertex termina y se pone **verde solo si entrenó bien** (rojo si falla). El `deploy`
+  de después sirve el modelo recién entrenado.
+- En `main`, el job `train` **pausa pidiendo aprobación** (Environment `prod`, required
+  reviewer); una sola aprobación gobierna entrenar+desplegar prod.
+- **PR** (a cualquier rama): solo `ci.yml` (`ruff` + `pytest`).
+- **Reentreno por datos** (no por código): `train.yml` → manual (`workflow_dispatch`,
+  elige `dev`/`prod`) **o** el **cron mensual → prod** (día 1, 03:00 UTC; lo gobierna el
+  gate SOFT + los emails, sin aprobación humana).
+- Requiere el secret `GCP_SA_KEY` en el repo, la rama `develop` creada, y los Environments
+  `dev`/`prod`. Detalle en [`deploy/CICD.md`](deploy/CICD.md).
+
+> El despliegue **manual** (sección A) y el de CI/CD hacen lo mismo por debajo (los mismos
+> scripts `01/02/03`); puedes usar cualquiera de los dos.
 
 ---
 
