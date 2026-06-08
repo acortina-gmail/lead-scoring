@@ -1,9 +1,29 @@
 # Guía de despliegue — Lead Scoring (GCP)
 
-Todo lo que tienes que hacer para desplegar, paso a paso. Proyecto destino:
-**`test-ml-flow-484314`**, región **`us-central1`** (donde está la tabla copiada).
+Todo lo que tienes que hacer para **desplegar, actualizar y destruir**, paso a paso.
+Proyecto destino: **`test-ml-flow-484314`**, región **`us-central1`** (donde está la tabla).
 
-## TL;DR (si ya tienes los prerequisitos)
+Esta guía cubre los **tres escenarios**:
+- **[A) Desde 0](#a-desplegar-desde-0)** — no hay nada en GCP.
+- **[B) Actualizar](#b-actualizar-cuando-ya-hay-algo-desplegado)** — ya hay algo desplegado.
+- **[C) Destruir](#c-destruir-todo)** — borrar los recursos.
+
+Todos los comandos se ejecutan **desde `ml/lead_scoring/pre_lead/`**.
+
+| Pieza | Qué es | Se crea/actualiza con |
+|---|---|---|
+| Infra | bucket GCS + Artifact Registry + APIs + alerta de fallo | Terraform (`terraform/`) |
+| Imágenes | `training-base` (pipeline) + `lead-scoring-serve` (API) | `deploy/01_build_images.sh` |
+| Modelos | 2 joblibs (`landing`+`main`) en `gs://…/models/<env>/live/` | `deploy/02_run_pipeline.sh` (Vertex) |
+| API | servicio Cloud Run `lead-scoring-<env>` | `deploy/03_deploy_serving.sh` |
+
+> **`ENV`** (`dev` por defecto \| `prod`) separa modelos y servicio por entorno **sin
+> necesitar un segundo proyecto GCP**. Para testear te basta `dev`; `prod` es para
+> producción real. El paso 2 entrena un *candidate* y, si no empeora respecto al *live*
+> actual, lo promociona a *live* (lo que sirve la API). Detalle en el README →
+> **Environments & model promotion**.
+
+## TL;DR (desde 0, con prerequisitos ya hechos)
 
 ```bash
 cd terraform && terraform init && terraform apply && cd ..   # 0) infra
@@ -11,21 +31,14 @@ cd terraform && terraform init && terraform apply && cd ..   # 0) infra
 ENV=dev ./deploy/02_run_pipeline.sh                           # 2) entrenar (Vertex)
 ENV=dev ./deploy/03_deploy_serving.sh                         # 3) API (Cloud Run)
 ```
-
-Orden **obligatorio**: 0 → 1 → 2 → 3. El paso 3 necesita que el 2 haya dejado los
-modelos en el bucket, o la API arranca pero responde 503 (sin modelos).
-
-> **`ENV`** (`dev` por defecto \| `prod`) separa modelos y servicio por entorno **sin
-> necesitar un segundo proyecto GCP**. El paso 2 entrena un *candidate* y, si no empeora
-> respecto al *live* actual, lo promociona a *live* (lo que sirve la API). Detalle completo
-> en el README → **Environments & model promotion**.
+Orden **obligatorio** `0 → 1 → 2 → 3`. El paso 3 necesita que el 2 haya dejado los
+modelos en `live/`, o la API arranca pero responde `503` (sin modelos).
 
 ---
 
 ## 0. Prerequisitos (una sola vez)
 
 ### Herramientas
-Comprueba que tienes todo:
 ```bash
 gcloud --version        # Google Cloud CLI
 bq version              # BigQuery CLI
@@ -55,15 +68,12 @@ gcloud projects get-iam-policy test-ml-flow-484314 \
 bq show test-ml-flow-484314:dataset.lead_scoring_train
 ```
 
----
-
-## 1. Configuración (revisa antes de empezar)
-
+### Configuración (revisa antes de empezar)
 Ya está todo apuntando al proyecto correcto. Solo revísalo:
 
 | Dónde | Qué |
 |---|---|
-| `terraform/terraform.tfvars` | project, region, **bucket**, ar_repo |
+| `terraform/terraform.tfvars` | project, region, **bucket**, ar_repo, `alert_emails` |
 | `deploy/config.sh` | mismos valores (los scripts leen de aquí) |
 | `src/leadscoring/config.py` | mismos valores + features por segmento |
 
@@ -72,9 +82,11 @@ otro, cámbialo **en los 3 sitios** a la vez (p.ej. `test-ml-flow-484314-leadsco
 
 ---
 
-## 2. Paso 0 — Infra con Terraform
+## A) Desplegar desde 0
 
-Crea las APIs, el bucket de GCS y el repositorio de imágenes (Artifact Registry).
+### Paso 0 — Infra con Terraform
+Crea las APIs, el bucket de GCS, el repo de imágenes (Artifact Registry) y la alerta de
+email si falla el pipeline.
 
 ```bash
 cd terraform
@@ -83,44 +95,34 @@ terraform plan        # opcional: revisa lo que va a crear
 terraform apply       # escribe 'yes' para confirmar
 cd ..
 ```
-Crea: bucket `gs://bq-pfu-ga4-leadscoring`, repo Docker `lead-scoring`, y habilita
-las APIs. Es idempotente (puedes re-ejecutarlo sin romper nada).
+Es idempotente (puedes re-ejecutarlo sin romper nada).
 
-> Alternativa sin Terraform: `./deploy/00_setup_gcp.sh` hace lo mismo con gcloud.
+> Alternativa sin Terraform: `./deploy/00_setup_gcp.sh` hace lo mismo con gcloud
+> (pero **sin** la alerta de fallo de pipeline, que solo está en Terraform).
 
----
-
-## 3. Paso 1 — Construir las imágenes
-
-Construye y sube a Artifact Registry dos imágenes (entrenamiento + serving) con
+### Paso 1 — Construir las imágenes
+Construye y sube a Artifact Registry las dos imágenes (entrenamiento + serving) con
 Cloud Build. Tarda ~3-6 min la primera vez.
 
 ```bash
 ./deploy/01_build_images.sh
 ```
-Sube:
-- `…/lead-scoring/training-base:latest` (la usan los componentes del pipeline)
-- `…/lead-scoring/lead-scoring-serve:latest` (la API)
-
-Verifica:
+Sube `…/training-base:latest` (componentes del pipeline) y `…/lead-scoring-serve:latest`
+(la API). Verifica:
 ```bash
-gcloud artifacts docker images list \
-  us-central1-docker.pkg.dev/test-ml-flow-484314/lead-scoring
+gcloud artifacts docker images list us-central1-docker.pkg.dev/test-ml-flow-484314/lead-scoring
 ```
 
----
-
-## 4. Paso 2 — Entrenar (Vertex AI Pipelines)
-
-Compila y lanza el pipeline. Entrena los dos modelos (landing + main) y deja los
-artefactos en el bucket.
+### Paso 2 — Entrenar (Vertex AI Pipelines)
+Compila y lanza el pipeline; entrena los dos modelos y deja los artefactos en el bucket.
 
 ```bash
-./deploy/02_run_pipeline.sh
+ENV=dev ./deploy/02_run_pipeline.sh
 ```
 - Instala `kfp` + `google-cloud-aiplatform` en el venv (1ª vez).
 - Imprime el ID del job. **Míralo en la consola**: Vertex AI → Pipelines (us-central1).
-  Ahí verás el grafo, las **métricas, la curva ROC y el informe HTML de lift** por segmento.
+  Verás el grafo, las **métricas, la curva ROC y el informe HTML** por segmento (incluye
+  la **tabla de capacidad** y los **grados A/B/C/D**).
 
 Cuando acabe (verde), comprueba que el gate promocionó los modelos a `live/`:
 ```bash
@@ -128,53 +130,114 @@ gcloud storage ls gs://bq-pfu-ga4-leadscoring/models/dev/live/
 # lead_scoring_landing.joblib
 # lead_scoring_main.joblib
 ```
-El paso `validate-and-promote-<segmento>` en la UI de Vertex muestra `promoted=1/0`
-y un HTML con el motivo. Si un retrain empeora, el gate **NO** promociona (deja el
-`live` anterior) y el pipeline sigue **verde** (gate SOFT).
+El paso `validate-and-promote-<segmento>` muestra `promoted=1/0` y un HTML con el motivo.
+Si un retrain empeora, el gate **NO** promociona (deja el `live` anterior) y el pipeline
+sigue **verde** (gate **SOFT**).
 
-> Solo compilar sin lanzar (para validar):
-> `ENV=dev ./deploy/02_run_pipeline.sh --compile-only`
+> Solo compilar sin lanzar (validar): `ENV=dev ./deploy/02_run_pipeline.sh --compile-only`
 
----
-
-## 5. Paso 3 — Desplegar la API (Cloud Run)
-
+### Paso 3 — Desplegar la API (Cloud Run)
 ```bash
 ENV=dev ./deploy/03_deploy_serving.sh
 ```
-Despliega el servicio `lead-scoring-dev` (scale-to-zero, auth privada, sirve el modelo
-`live` del entorno). Al final imprime la **URL**.
-
-Verifica:
+Despliega `lead-scoring-dev` (scale-to-zero, auth privada, sirve el modelo `live` del
+entorno). Imprime la **URL**. Verifica:
 ```bash
-URL=$(gcloud run services describe lead-scoring-dev --region us-central1 \
-      --format='value(status.url)')
+URL=$(gcloud run services describe lead-scoring-dev --region us-central1 --format='value(status.url)')
+TOKEN=$(gcloud auth print-identity-token)
 
-# health (debe listar landing + main)
-curl -s "$URL/health" -H "Authorization: Bearer $(gcloud auth print-identity-token)"
+curl -s "$URL/health" -H "Authorization: Bearer $TOKEN"          # debe listar landing + main
 
-# scorear un lead de ejemplo
-curl -s -X POST "$URL/score" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -H 'Content-Type: application/json' \
-  -d '{"form_name":"unbounce_master","page_location":"https://x/landing/mba?utm_campaign=brand","user_studies":"es-2","language_site":"es","ga_session_number":2}'
+curl -s -X POST "$URL/score" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"form_name":"unbounce_master","page_name":"unbounce/mba","page_location":"https://x/landing/mba?utm_campaign=brand","product_id":123,"user_province":"Barcelona","user_studies":"es-2","ga_session_number":2}'
 ```
 Devuelve algo como:
 ```json
-{"segmento":"landing","score":0.07,"lift_vs_base":3.0,"features_used":[...]}
+{"segmento":"landing","score":0.07,"grade":"A","base_rate":0.023,"lift_vs_base":3.0,"features_used":[...]}
 ```
 
 ---
 
-## Reentrenar / actualizar el modelo
+## B) Actualizar (cuando ya hay algo desplegado)
 
-1. (Si cambian datos/variables) re-lanza el entrenamiento: `ENV=dev ./deploy/02_run_pipeline.sh`
-   (entrena *candidate* → gate → promociona a *live* si no empeora)
-2. ⚠️ La API **carga los modelos al arrancar**, así que NO ve los modelos nuevos
-   hasta que se reinicia. Fuerza una revisión nueva:
-   ```bash
-   ENV=dev ./deploy/03_deploy_serving.sh   # vuelve a desplegar (recarga el modelo live)
-   ```
+Qué reconstruir depende de **qué cambiaste**. Regla: si tocaste el código de un proceso,
+hay que **reconstruir su imagen** antes de relanzarlo.
+
+| Cambiaste… | 01 build | 02 train | 03 deploy |
+|---|:--:|:--:|:--:|
+| Solo datos (BigQuery) | — | ✅ | — (auto-reload / `/reload`) |
+| `serving/app.py` o `leadscoring` (serving) | ✅ | — | ✅ |
+| `pipelines/` o `leadscoring` (entreno) | ✅ | ✅ | — |
+| Infra (`terraform/`) | — | — | — → `terraform apply` |
+
+### B1. Reentrenar el modelo (datos nuevos, mismo código)
+```bash
+ENV=dev ./deploy/02_run_pipeline.sh        # entrena candidate → gate → live
+```
+- El **caching está OFF** por defecto, así que un re-lanzamiento **siempre entrena** (el
+  caching de Vertex se basa en la *referencia* de la tabla, no en su contenido).
+- **No hace falta redeploy:** la API re-chequea GCS cada ~5 min (`MODEL_RELOAD_CHECK_SECONDS`)
+  y hace *hot-swap* del nuevo `live` sola. Para que lo coja **al instante**:
+  ```bash
+  curl -s -X POST "$URL/reload" -H "Authorization: Bearer $TOKEN"
+  ```
+
+### B2. Cambiaste código de **serving** (`serving/app.py`, `src/leadscoring/`)
+La imagen de serving lleva el código dentro → reconstruir y redeployar:
+```bash
+./deploy/01_build_images.sh
+ENV=dev ./deploy/03_deploy_serving.sh
+```
+
+### B3. Cambiaste código del **pipeline/entreno** (`pipelines/`, `src/leadscoring/`)
+La imagen `training-base` lleva el código → reconstruir y reentrenar:
+```bash
+./deploy/01_build_images.sh
+ENV=dev ./deploy/02_run_pipeline.sh
+```
+
+### B4. Promocionar dev → prod
+Repite **2 y 3** con `ENV=prod` (entrena/promociona el modelo prod y levanta el servicio
+`lead-scoring-prod`):
+```bash
+ENV=prod ./deploy/02_run_pipeline.sh
+ENV=prod ./deploy/03_deploy_serving.sh
+```
+
+### B5. Vía CI/CD (GitHub Actions) — automático
+- **PR**: corre `ruff` + `pytest` (`.github/workflows/ci.yml`).
+- **Merge a `main`** (cambios en `ml/lead_scoring/pre_lead/**`): build + deploy a **dev**
+  automático; **prod** queda detrás de una **aprobación manual** (GitHub Environment `prod`).
+- **Reentrenar**: workflow manual `train.yml` (`workflow_dispatch`, elige `dev`/`prod`).
+- Requiere el secret `GCP_SA_KEY` en el repo. Detalle en [`deploy/CICD.md`](deploy/CICD.md).
+
+---
+
+## C) Destruir todo
+
+Un script borra en el orden correcto (Cloud Run → bucket + Artifact Registry →
+opcionalmente la clave de CI):
+
+```bash
+./deploy/99_teardown.sh            # pide confirmación (teclea el project id)
+./deploy/99_teardown.sh --yes      # sin preguntar
+```
+
+**Borra:** servicios Cloud Run (`lead-scoring-dev` *y* `lead-scoring-prod`), bucket
+`gs://bq-pfu-ga4-leadscoring` (con modelos + artefactos), repo Artifact Registry (con
+imágenes). Usa `terraform destroy` si hay estado; si no, borra con `gcloud`.
+
+**NO toca:** la tabla de BigQuery `dataset.lead_scoring_train` (tus datos), la service
+account por defecto, ni las APIs.
+
+**Clave de CI (opcional):** por defecto la deja (la usa GitHub Actions). Para borrarla:
+```bash
+./deploy/99_teardown.sh --yes --delete-sa-keys   # ⚠️ rompe el deploy por GitHub Actions
+```
+Si la borras, quita también el secret `GCP_SA_KEY` del repo de GitHub.
+
+> Solo bajar la API (sin borrar datos/imágenes):
+> `gcloud run services delete lead-scoring-dev --region us-central1`.
 
 ---
 
@@ -182,8 +245,9 @@ Devuelve algo como:
 
 | Síntoma | Causa / arreglo |
 |---|---|
-| `/health` da **503** | No hay modelos en `models/<env>/live/` → corre el paso 2 (y que el gate promocione) antes del 3. |
-| Modelo nuevo no se sirve | `validate-and-promote` no promocionó (mira `promoted` y el HTML en Vertex), o no redesplegaste (la API recarga al arrancar). |
+| `/health` o `/score` da **503** | No hay modelos en `models/<env>/live/` → corre el paso 2 (y que el gate promocione) antes del 3. |
+| El modelo nuevo no se sirve | Espera ~5 min o haz `POST /reload`; revisa que `validate-and-promote` hizo `promoted=1` (mira el HTML en Vertex). |
+| Cambié serving y no se refleja | Rebuild (`01`) + redeploy (`03`): el código va dentro de la imagen, no se recarga solo. |
 | `PermissionDenied` al lanzar pipeline | No hiciste `gcloud auth application-default login`. |
 | Build falla: repo no existe | No corriste Terraform / paso 0 (falta el repo de Artifact Registry). |
 | Pipeline falla leyendo BigQuery | La tabla o el bucket no están en `us-central1` (deben coincidir con la región). |
@@ -196,9 +260,10 @@ Devuelve algo como:
 
 | Paso | Herramienta | Crea / hace |
 |---|---|---|
-| 0 | Terraform | bucket + Artifact Registry + APIs (infra fija) |
+| 0 | Terraform | bucket + Artifact Registry + APIs + alerta de fallo (infra) |
 | 1 | Cloud Build | imágenes Docker (entrenamiento + serving) |
-| 2 | Vertex Pipelines | entrena los 2 modelos → joblibs en GCS + métricas en la UI |
+| 2 | Vertex Pipelines | entrena los 2 modelos → joblibs en GCS + métricas/HTML en la UI |
 | 3 | Cloud Run | despliega la API de scoring (tiempo real) |
 
-CI/CD (más adelante, con Cloud Build) automatizaría los pasos 1 y 3 en cada push.
+CI/CD (GitHub Actions) automatiza **1 y 3** en cada merge a `main` (dev automático, prod
+con aprobación) y el reentreno con un workflow manual — ver `deploy/CICD.md`.
