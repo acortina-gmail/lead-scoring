@@ -52,19 +52,25 @@ def _utm_campaign_of(u) -> object:
 
 
 def derive_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Engineer features from `page_location`, identically in train and serve.
+    """Engineer features identically in train and serve.
 
-    - ``page_path``    = URL path component of page_location  (e.g. '/home')
+    - ``page_path``    = ``page_name`` (the GA content label is the source of truth
+      for the page; NOT parsed from the URL).
     - ``utm_campaign`` = REGEXP_EXTRACT(page_location, '[?&]utm_campaign=([^&]+)')
 
-    Always adds both columns (NaN when page_location is missing/unparseable) so a
-    model that lists them never hits a missing-column error.
+    Always adds both columns (NaN when the source is missing) so a model that lists
+    them never hits a missing-column error.
     """
     out = df.copy()
+    name = out["page_name"] if "page_name" in out.columns else pd.Series(
+        np.nan, index=out.index
+    )
     loc = out["page_location"] if "page_location" in out.columns else pd.Series(
         np.nan, index=out.index
     )
-    out["page_path"] = [_path_of(u) for u in loc]
+    out["page_path"] = pd.Series(
+        np.where(name.isna(), np.nan, name.astype(str)), index=out.index, dtype=object
+    )
     out["utm_campaign"] = [_utm_campaign_of(u) for u in loc]
     return out
 
