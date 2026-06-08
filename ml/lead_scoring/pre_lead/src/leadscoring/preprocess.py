@@ -17,7 +17,6 @@ Design rules (carried over from the modelling phase, do not "improve" silently):
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
@@ -33,15 +32,6 @@ MISSING = "MISSING"
 # Features engineered from `page_location` (not materialized in the table).
 _UTM_CAMPAIGN_RE = re.compile(r"[?&]utm_campaign=([^&]+)")
 DERIVED_COLUMNS = ("page_path", "utm_campaign")
-
-
-def _path_of(u) -> object:
-    if not isinstance(u, str) or not u:
-        return np.nan
-    try:
-        return urlsplit(u).path or np.nan
-    except Exception:
-        return np.nan
 
 
 def _utm_campaign_of(u) -> object:
@@ -68,8 +58,10 @@ def derive_columns(df: pd.DataFrame) -> pd.DataFrame:
     loc = out["page_location"] if "page_location" in out.columns else pd.Series(
         np.nan, index=out.index
     )
+    # Empty/non-string page_name is missing (NaN), never an empty-string category.
     out["page_path"] = pd.Series(
-        np.where(name.isna(), np.nan, name.astype(str)), index=out.index, dtype=object
+        [v if (isinstance(v, str) and v) else np.nan for v in name],
+        index=out.index, dtype=object,
     )
     out["utm_campaign"] = [_utm_campaign_of(u) for u in loc]
     return out

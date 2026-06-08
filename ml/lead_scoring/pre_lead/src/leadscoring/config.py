@@ -82,6 +82,30 @@ def model_uri(segment: str, stage: str = "live") -> str:
     return f"{MODELS_PREFIX}/{stage}/lead_scoring_{segment}.joblib"
 
 
+# --- Score grades (A/B/C/D) --------------------------------------------------
+# Grades are PERCENTILE BANDS of the model's OWN score distribution (scores are
+# uncalibrated/ranking-only, so absolute cutoffs would be meaningless):
+#   A = top 10% (best converting), B = 10–30%, C = 30–60%, D = bottom 40%.
+# The cutoffs are fitted per model at train time (evaluate.grade_thresholds) and
+# stored in the artifact; grade_of() maps a live score to its grade at serve time.
+GRADE_BANDS = [("A", 90), ("B", 70), ("C", 40)]  # (grade, lower percentile); D = below C
+
+
+def grade_of(score, thresholds):
+    """Map a raw score to its letter grade using fitted per-model thresholds.
+
+    ``thresholds`` is ``{"A": q90, "B": q70, "C": q40}`` (score cutoffs). Returns
+    ``None`` when the artifact carries no thresholds (e.g. an older model), so the
+    caller degrades gracefully instead of crashing.
+    """
+    if not thresholds:
+        return None
+    for g, _ in GRADE_BANDS:
+        if score >= thresholds[g]:
+            return g
+    return "D"
+
+
 def route_segment(payload: dict) -> str:
     """Decide which segment model scores this lead.
 

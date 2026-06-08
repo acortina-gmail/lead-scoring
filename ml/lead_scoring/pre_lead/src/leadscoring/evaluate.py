@@ -111,6 +111,91 @@ def test_block(y_true, scores, frac: float = 0.10) -> dict:
     }
 
 
+def capacity_table(
+    y_true,
+    scores,
+    base: float,
+    daily_volume: float,
+    cuts=(2, 5, 10, 15, 20, 30, 50, 60, 70, 80, 90),
+) -> pd.DataFrame:
+    """Cumulative-gains ("capacity") table — the client-facing view of the model.
+
+    For each ``Top P%`` of leads (ranked by score, highest first) it answers: if we
+    call that slice, how many leads/day is it, what conversion rate do we hit, what
+    share of all conversions do we capture, and how many times better than random.
+
+    Rank-based (take the first ``k = round(P% · n)`` by score) rather than a quantile
+    threshold, so ties in the (discrete) score don't distort the cut. ``daily_volume``
+    only scales the per-day columns; the rates and lift are volume-independent.
+    """
+    y = np.asarray(y_true).astype(int)
+    s = np.asarray(scores, dtype=float)
+    n = len(y)
+    order = np.argsort(-s, kind="stable")  # highest score first
+    y_sorted = y[order]
+    total_conv = max(int(y.sum()), 1)
+    rows = []
+    for p in cuts:
+        k = max(int(round(p / 100 * n)), 1)
+        top = y_sorted[:k]
+        tasa = float(top.mean())
+        leads_dia = p / 100 * daily_volume
+        rows.append(
+            {
+                "top_pct": p,
+                "leads_dia": leads_dia,
+                "conv_dia": leads_dia * tasa,
+                "tasa_exito": tasa,
+                "pct_capturadas": float(top.sum()) / total_conv,
+                "vs_azar": (tasa / base) if base else float("nan"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def grade_thresholds(scores) -> dict:
+    """Fit the A/B/C/D score cutoffs from a score distribution (``config.GRADE_BANDS``).
+
+    Returns ``{"A": q90, "B": q70, "C": q40}`` — the score at each band's lower
+    percentile. Stored in the artifact so serving can grade a live score the same way.
+    """
+    s = np.asarray(scores, dtype=float)
+    return {g: float(np.quantile(s, q / 100)) for g, q in config.GRADE_BANDS}
+
+
+def grade_table(y_true, scores, base: float, daily_volume: float) -> pd.DataFrame:
+    """Per-grade legend (NON-cumulative): for each A/B/C/D band, its conversion rate
+    and lift vs random, so the grade returned by ``/score`` is readable as a number.
+
+    Bands come from ``config.GRADE_BANDS`` (A = top 10%, B = 10–30%, C = 30–60%,
+    D = bottom 40%), sliced on the rank-sorted leads.
+    """
+    y = np.asarray(y_true).astype(int)
+    s = np.asarray(scores, dtype=float)
+    n = len(y)
+    y_sorted = y[np.argsort(-s, kind="stable")]
+    # Cumulative upper edge of each band as a percentile-from-top (e.g. 90 -> 10%).
+    uppers = [100 - q for _, q in config.GRADE_BANDS] + [100]  # [10, 30, 60, 100]
+    grades = [g for g, _ in config.GRADE_BANDS] + ["D"]
+    rows = []
+    prev = 0
+    for g, up in zip(grades, uppers):
+        lo, hi = int(round(prev / 100 * n)), int(round(up / 100 * n))
+        seg = y_sorted[lo:hi]
+        tasa = float(seg.mean()) if len(seg) else float("nan")
+        rows.append(
+            {
+                "grade": g,
+                "banda": f"{prev}–{up}%",
+                "leads_dia": (hi - lo) / max(n, 1) * daily_volume,
+                "tasa_exito": tasa,
+                "vs_azar": (tasa / base) if base else float("nan"),
+            }
+        )
+        prev = up
+    return pd.DataFrame(rows)
+
+
 def roc_points(y_true, scores, n: int = 200):
     """Down-sampled ROC points for KFP ClassificationMetrics.
 
@@ -127,9 +212,57 @@ def roc_points(y_true, scores, n: int = 200):
     return fpr.tolist(), tpr.tolist(), thr.tolist()
 
 
+def _capacity_section(capacity: pd.DataFrame, grade_tab: pd.DataFrame | None) -> str:
+    """Client-facing HTML: the capacity (cumulative-gains) table + A/B/C/D legend."""
+    r0 = capacity.iloc[0]  # recover the segment's daily volume from any row
+    vol = r0["leads_dia"] / (r0["top_pct"] / 100) if r0["top_pct"] else 0.0
+    cap_rows = "".join(
+        f"<tr><td>Top {int(r.top_pct)}%</td><td>~{r.leads_dia:.0f}</td>"
+        f"<td>~{r.conv_dia:.1f}</td><td>{r.tasa_exito*100:.1f}%</td>"
+        f"<td>{r.pct_capturadas*100:.1f}%</td><td>{r.vs_azar:.1f}x</td></tr>"
+        for r in capacity.itertuples()
+    )
+    grade_section = ""
+    if grade_tab is not None:
+        g_rows = "".join(
+            f"<tr><td style='text-align:center'><b>{r.grade}</b></td><td>{r.banda}</td>"
+            f"<td>~{r.leads_dia:.0f}</td><td>{r.tasa_exito*100:.1f}%</td>"
+            f"<td>{r.vs_azar:.1f}x</td></tr>"
+            for r in grade_tab.itertuples()
+        )
+        grade_section = f"""
+    <h3>Grados A / B / C / D (por lead)</h3>
+    <p>Cada lead recibe un grado segun su posicion en el ranking del modelo.
+       A = el 10% con mas probabilidad de convertir; D = el 40% con menos.</p>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;text-align:right">
+      <tr style="background:#1c4587;color:#fff;text-align:center">
+        <th>Grado</th><th>Banda</th><th>Leads/dia</th><th>Tasa de exito</th><th>vs. azar</th></tr>
+      {g_rows}
+    </table>
+    """
+    return f"""
+    <h3>Capacidad de llamada</h3>
+    <p>Si el equipo llama al <b>Top X%</b> de leads (ordenados por score), esto es lo que
+       captura. Volumen estimado del segmento: <b>~{vol:.0f} leads/dia</b>.</p>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;text-align:right">
+      <tr style="background:#1c4587;color:#fff;text-align:center">
+        <th>Capacidad</th><th>Leads/dia</th><th>Conversiones/dia</th>
+        <th>Tasa de exito</th><th>% conversiones capturadas</th><th>vs. azar</th></tr>
+      {cap_rows}
+    </table>
+    {grade_section}
+    <hr/>
+    """
+
+
 def html_report(segment: str, lift_tab: pd.DataFrame, base: float, stability: dict,
-                test: dict | None = None) -> str:
-    """Self-contained HTML report (test metrics + confusion matrix + lift + stability)."""
+                test: dict | None = None, capacity: pd.DataFrame | None = None,
+                grade_tab: pd.DataFrame | None = None) -> str:
+    """Self-contained HTML report.
+
+    Client-facing sections first (capacity table + A/B/C/D legend, when ``capacity`` is
+    given), then the team-facing ML metrics (test + confusion matrix + lift + stability).
+    """
     chart = ""
     try:
         import matplotlib
@@ -185,10 +318,15 @@ def html_report(segment: str, lift_tab: pd.DataFrame, base: float, stability: di
        recall @top{pct}% = <b>{test['recall']*100:.1f}%</b></p>
     """
 
+    capacity_section = (
+        _capacity_section(capacity, grade_tab) if capacity is not None else ""
+    )
+
     return f"""
     <html><body style="font-family:system-ui,sans-serif">
     <h2>Lead scoring — segment: {segment}</h2>
     <p>base conversion: <b>{base*100:.2f}%</b></p>
+    {capacity_section}
     {test_section}
     <h3>Robust metrics (holdout, {stability.get('n_seeds')} seeds)</h3>
     <ul>

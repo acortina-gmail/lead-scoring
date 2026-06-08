@@ -135,8 +135,10 @@ def train_model(
 @dsl.component(base_image=BASE_IMAGE)
 def evaluate_model(
     seg: Input[Dataset],
+    data: Input[Dataset],
     model: Input[Model],
     segment: str,
+    daily_volume: int,
     metrics: Output[Metrics],
     cls_metrics: Output[ClassificationMetrics],
     report: Output[HTML],
@@ -148,6 +150,9 @@ def evaluate_model(
     from leadscoring import evaluate
 
     df = pd.read_parquet(seg.path)
+    # Segment's slice of the global daily volume, by its share of the training rows.
+    n_total = len(pd.read_parquet(data.path))
+    seg_daily = daily_volume * (len(df) / max(n_total, 1))
     meta = joblib.load(model.path + ".meta.joblib")
     params, feats, stab = meta["params"], meta["features"], meta["stability"]
 
@@ -166,6 +171,11 @@ def evaluate_model(
     metrics.log_metric("test_pr_auc", test["pr_auc"])
     metrics.log_metric("test_precision_top10", test["precision"])
     metrics.log_metric("test_recall_top10", test["recall"])
+    metrics.log_metric("seg_daily_volume", seg_daily)
+
+    # Client-facing tables (built on the SAME held-out scores, so the rates are honest).
+    capacity = evaluate.capacity_table(y_true, scores, base, seg_daily)
+    grade_tab = evaluate.grade_table(y_true, scores, base, seg_daily)
     import math
 
     fpr, tpr, thr = evaluate.roc_points(y_true, scores)
@@ -177,7 +187,8 @@ def evaluate_model(
     cls_metrics.log_roc_curve(fpr, tpr, thr)
 
     with open(report.path, "w") as f:
-        f.write(evaluate.html_report(segment, lift_tab, base, stab, test))
+        f.write(evaluate.html_report(segment, lift_tab, base, stab, test,
+                                     capacity=capacity, grade_tab=grade_tab))
 
 
 @dsl.component(base_image=BASE_IMAGE)
@@ -194,14 +205,21 @@ def package_artifact(
     this becomes the ``live`` model that serving loads.
     """
     import joblib
+    import pandas as pd
     import xgboost as xgb
 
-    from leadscoring import config
+    from leadscoring import config, evaluate, preprocess
 
     bundle = joblib.load(preprocessor.path)
     meta = joblib.load(model.path + ".meta.joblib")
     clf = xgb.XGBClassifier()
     clf.load_model(model.path)
+
+    # A/B/C/D cutoffs from the PRODUCTION model's own score distribution, so a live
+    # score grades consistently with the deployed model (serving reads grade_thresholds).
+    df = pd.read_parquet(seg.path)
+    X = preprocess.transform(bundle["preprocessor"], df, bundle["num"], bundle["cat"])
+    grade_thr = evaluate.grade_thresholds(clf.predict_proba(X)[:, 1])
 
     artifact = {
         "preprocessor": bundle["preprocessor"],
@@ -215,7 +233,8 @@ def package_artifact(
         "base_rate": meta["base_rate"],
         "n_train": meta["n_train"],
         "metrics": meta["stability"],
-        "schema_version": 1,
+        "grade_thresholds": grade_thr,
+        "schema_version": 2,
     }
     local = f"/tmp/lead_scoring_{segment}.joblib"
     joblib.dump(artifact, local)
@@ -330,6 +349,7 @@ def lead_scoring_pipeline(
     models_prefix: str,
     n_iter: int = 60,
     n_seeds: int = 5,
+    daily_volume: int = 250,
     gate_metric: str = "lift_top",
     gate_min_abs: float = 1.0,
     gate_max_regression: float = 0.15,
@@ -362,8 +382,10 @@ def lead_scoring_pipeline(
 
         ev = evaluate_model(
             seg=seg.outputs["seg_out"],
+            data=raw.outputs["data"],
             model=trained.outputs["model"],
             segment=segment,
+            daily_volume=daily_volume,
         )
         ev.set_display_name(f"evaluate-{segment}")
 
