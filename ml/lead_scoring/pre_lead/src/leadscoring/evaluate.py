@@ -174,9 +174,9 @@ def grade_table(y_true, scores, base: float, daily_volume: float) -> pd.DataFram
     s = np.asarray(scores, dtype=float)
     n = len(y)
     y_sorted = y[np.argsort(-s, kind="stable")]
-    # Cumulative upper edge of each band as a percentile-from-top (e.g. 90 -> 10%).
-    uppers = [100 - q for _, q in config.GRADE_BANDS] + [100]  # [10, 30, 60, 100]
-    grades = [g for g, _ in config.GRADE_BANDS] + ["D"]
+    # Cumulative upper edge of each band as a percentile-from-top (e.g. 75 -> 25%).
+    uppers = [100 - q for _, q in config.GRADE_BANDS] + [100]  # [25, 50, 100]
+    grades = [g for g, _ in config.GRADE_BANDS] + [config.GRADE_FALLBACK]
     rows = []
     prev = 0
     for g, up in zip(grades, uppers):
@@ -212,45 +212,23 @@ def roc_points(y_true, scores, n: int = 200):
     return fpr.tolist(), tpr.tolist(), thr.tolist()
 
 
-def _capacity_section(capacity: pd.DataFrame, grade_tab: pd.DataFrame | None) -> str:
-    """Client-facing HTML: the capacity (cumulative-gains) table + A/B/C/D legend."""
-    r0 = capacity.iloc[0]  # recover the segment's daily volume from any row
-    vol = r0["leads_dia"] / (r0["top_pct"] / 100) if r0["top_pct"] else 0.0
-    cap_rows = "".join(
-        f"<tr><td>Top {int(r.top_pct)}%</td><td>~{r.leads_dia:.0f}</td>"
-        f"<td>~{r.conv_dia:.1f}</td><td>{r.tasa_exito*100:.1f}%</td>"
-        f"<td>{r.pct_capturadas*100:.1f}%</td><td>{r.vs_azar:.1f}x</td></tr>"
-        for r in capacity.itertuples()
+def _grades_section(grade_tab: pd.DataFrame) -> str:
+    """Client-facing HTML: the A/B/C grade legend (conversion + lift per band)."""
+    g_rows = "".join(
+        f"<tr><td style='text-align:center'><b>{r.grade}</b></td><td>{r.banda}</td>"
+        f"<td>~{r.leads_dia:.0f}</td><td>{r.tasa_exito*100:.1f}%</td>"
+        f"<td>{r.vs_azar:.1f}x</td></tr>"
+        for r in grade_tab.itertuples()
     )
-    grade_section = ""
-    if grade_tab is not None:
-        g_rows = "".join(
-            f"<tr><td style='text-align:center'><b>{r.grade}</b></td><td>{r.banda}</td>"
-            f"<td>~{r.leads_dia:.0f}</td><td>{r.tasa_exito*100:.1f}%</td>"
-            f"<td>{r.vs_azar:.1f}x</td></tr>"
-            for r in grade_tab.itertuples()
-        )
-        grade_section = f"""
-    <h3>Grados A / B / C / D (por lead)</h3>
-    <p>Cada lead recibe un grado segun su posicion en el ranking del modelo.
-       A = el 10% con mas probabilidad de convertir; D = el 40% con menos.</p>
+    return f"""
+    <h3>Grados A / B / C (por lead)</h3>
+    <p>Cada lead recibe un grado segun su posicion en el ranking del modelo:
+       A = el 25% con mas probabilidad de convertir, C = el 50% con menos.</p>
     <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;text-align:right">
       <tr style="background:#1c4587;color:#fff;text-align:center">
         <th>Grado</th><th>Banda</th><th>Leads/dia</th><th>Tasa de exito</th><th>vs. azar</th></tr>
       {g_rows}
     </table>
-    """
-    return f"""
-    <h3>Capacidad de llamada</h3>
-    <p>Si el equipo llama al <b>Top X%</b> de leads (ordenados por score), esto es lo que
-       captura. Volumen estimado del segmento: <b>~{vol:.0f} leads/dia</b>.</p>
-    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;text-align:right">
-      <tr style="background:#1c4587;color:#fff;text-align:center">
-        <th>Capacidad</th><th>Leads/dia</th><th>Conversiones/dia</th>
-        <th>Tasa de exito</th><th>% conversiones capturadas</th><th>vs. azar</th></tr>
-      {cap_rows}
-    </table>
-    {grade_section}
     <hr/>
     """
 
@@ -258,10 +236,9 @@ def _capacity_section(capacity: pd.DataFrame, grade_tab: pd.DataFrame | None) ->
 def html_report(segment: str, lift_tab: pd.DataFrame, base: float, stability: dict,
                 test: dict | None = None, capacity: pd.DataFrame | None = None,
                 grade_tab: pd.DataFrame | None = None) -> str:
-    """Self-contained HTML report.
-
-    Client-facing sections first (capacity table + A/B/C/D legend, when ``capacity`` is
-    given), then the team-facing ML metrics (test + confusion matrix + lift + stability).
+    """Self-contained HTML report: headline PR-AUC, the A/B/C grade legend (when
+    ``grade_tab`` is given), then the team-facing robust metrics + lift-by-decile.
+    (``test``/``capacity`` are accepted for back-compat but no longer rendered.)
     """
     chart = ""
     try:
@@ -291,47 +268,31 @@ def html_report(segment: str, lift_tab: pd.DataFrame, base: float, stability: di
         for r in lift_tab.itertuples()
     )
 
-    def ms(k):
-        return f"{stability[k]['mean']:.4f} &plusmn; {stability[k]['std']:.4f}"
-
     def msx(k):
         return f"{stability[k]['mean']:.2f}x &plusmn; {stability[k]['std']:.2f}"
 
-    test_section = ""
-    if test:
-        cm = test["cm"]
-        pct = int(round(test["frac"] * 100))
-        test_section = f"""
-    <h3>Test metrics (held-out)</h3>
-    <ul>
-      <li><b>PR-AUC: {test['pr_auc']:.4f}</b> (base {base:.4f})</li>
-      <li>ROC-AUC: {test['roc_auc']:.4f}</li>
-      <li>n test: {test['n_test']}</li>
-    </ul>
-    <h4>Confusion matrix &mdash; operating point: top {pct}% (score &ge; {test['threshold']:.4f})</h4>
-    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;text-align:center">
-      <tr><th></th><th>pred 0 (no llamar)</th><th>pred 1 (llamar)</th></tr>
-      <tr><th>real 0 (no convierte)</th><td>{cm['tn']}</td><td>{cm['fp']}</td></tr>
-      <tr><th>real 1 (convierte)</th><td>{cm['fn']}</td><td style="background:#d9ead3"><b>{cm['tp']}</b></td></tr>
-    </table>
-    <p>precision @top{pct}% = <b>{test['precision']*100:.1f}%</b> &nbsp;|&nbsp;
-       recall @top{pct}% = <b>{test['recall']*100:.1f}%</b></p>
-    """
+    grades_section = _grades_section(grade_tab) if grade_tab is not None else ""
 
-    capacity_section = (
-        _capacity_section(capacity, grade_tab) if capacity is not None else ""
-    )
+    pr_mean = stability["pr_auc"]["mean"]
+    pr_std = stability["pr_auc"]["std"]
+    prauc_headline = f"""
+    <div style="margin:14px 0;padding:16px 20px;background:#eef3fb;border-radius:8px;display:inline-block">
+      <div style="font-size:14px;color:#333">PR-AUC <span style="color:#888">(holdout, {stability.get('n_seeds')} seeds)</span></div>
+      <span style="font-size:42px;font-weight:700;color:#1c4587">{pr_mean:.3f}</span>
+      <span style="font-size:18px;color:#666">&plusmn; {pr_std:.3f}</span>
+      <span style="font-size:14px;color:#888">&nbsp; vs base {base*100:.1f}%</span>
+    </div>
+    """
 
     return f"""
     <html><body style="font-family:system-ui,sans-serif">
     <h2>Lead scoring — segment: {segment}</h2>
     <p>base conversion: <b>{base*100:.2f}%</b></p>
-    {capacity_section}
-    {test_section}
+    {prauc_headline}
+    {grades_section}
     <h3>Robust metrics (holdout, {stability.get('n_seeds')} seeds)</h3>
     <ul>
-      <li>PR-AUC: <b>{ms('pr_auc')}</b></li>
-      <li>ROC-AUC: <b>{ms('roc')}</b></li>
+      <li>ROC-AUC: <b>{stability['roc']['mean']:.4f} &plusmn; {stability['roc']['std']:.4f}</b></li>
       <li>lift top decile: <b>{msx('lift_top')}</b></li>
       <li>lift top-2 deciles: <b>{msx('lift_top2')}</b></li>
     </ul>

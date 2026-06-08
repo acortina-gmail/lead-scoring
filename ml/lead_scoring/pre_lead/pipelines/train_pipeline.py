@@ -173,8 +173,7 @@ def evaluate_model(
     metrics.log_metric("test_recall_top10", test["recall"])
     metrics.log_metric("seg_daily_volume", seg_daily)
 
-    # Client-facing tables (built on the SAME held-out scores, so the rates are honest).
-    capacity = evaluate.capacity_table(y_true, scores, base, seg_daily)
+    # Client-facing A/B/C grade legend (built on the SAME held-out scores -> honest rates).
     grade_tab = evaluate.grade_table(y_true, scores, base, seg_daily)
     import math
 
@@ -187,8 +186,7 @@ def evaluate_model(
     cls_metrics.log_roc_curve(fpr, tpr, thr)
 
     with open(report.path, "w") as f:
-        f.write(evaluate.html_report(segment, lift_tab, base, stab, test,
-                                     capacity=capacity, grade_tab=grade_tab))
+        f.write(evaluate.html_report(segment, lift_tab, base, stab, grade_tab=grade_tab))
 
 
 @dsl.component(base_image=BASE_IMAGE)

@@ -121,8 +121,8 @@ ENV=dev ./deploy/02_run_pipeline.sh
 ```
 - Instala `kfp` + `google-cloud-aiplatform` en el venv (1ª vez).
 - Imprime el ID del job. **Míralo en la consola**: Vertex AI → Pipelines (us-central1).
-  Verás el grafo, las **métricas, la curva ROC y el informe HTML** por segmento (incluye
-  la **tabla de capacidad** y los **grados A/B/C/D**).
+  Verás el grafo, las **métricas, la curva ROC y el informe HTML** por segmento (con el
+  **PR-AUC** destacado y los **grados A/B/C** por lead).
 
 Cuando acabe (verde), comprueba que el gate promocionó los modelos a `live/`:
 ```bash
@@ -149,12 +149,21 @@ TOKEN=$(gcloud auth print-identity-token)
 curl -s "$URL/health" -H "Authorization: Bearer $TOKEN"          # debe listar landing + main
 
 curl -s -X POST "$URL/score" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"form_name":"unbounce_master","page_name":"unbounce/mba","page_location":"https://x/landing/mba?utm_campaign=brand","product_id":123,"user_province":"Barcelona","user_studies":"es-2","ga_session_number":2}'
+  -d '{"form_name":"unbounce_master","platform":"WEB","page_name":"unbounce/mba","page_location":"https://x/landing/mba?utm_campaign=brand","product_id":123,"user_province":"Barcelona","user_studies":"es-2","ga_session_number":2}'
 ```
 Devuelve algo como:
 ```json
 {"segmento":"landing","score":0.07,"grade":"A","base_rate":0.023,"lift_vs_base":3.0,"features_used":[...]}
 ```
+
+> **Campos del payload — enrutado y features:** hoy el segmento (landing/main) se enruta
+> por `segmento` explícito o, si falta, por `form_name` (empieza por `unbounce` → landing).
+> En el **deploy real** el enrutado pasará a usar **`platform`** (lo pediste al cliente),
+> por eso el ejemplo ya lo incluye — habrá que adaptar `route_segment` (pendiente). Además,
+> manda siempre los campos que son **feature** del modelo o se verán como `MISSING`:
+> `main` usa `form_name`, `page_name`, `product_id`, `user_country`, `user_province`,
+> `user_studies`, `ga_session_number`; `landing` usa `page_name`, `language_site`,
+> `utm_campaign` (de `page_location`), `user_studies`, `ga_session_number`.
 
 ---
 

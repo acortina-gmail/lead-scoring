@@ -17,4 +17,4 @@ URL=$(gcloud run services describe "${SERVICE}" --project "${PROJECT_ID}" --regi
 echo ">> Deployed: ${URL}"
 echo "   Test (authenticated):"
 echo "   curl -s -X POST ${URL}/score -H \"Authorization: Bearer \$(gcloud auth print-identity-token)\" \\"
-echo "        -H 'Content-Type: application/json' -d '{\"form_name\":\"unbounce_x\",\"product_id\":123,\"user_province\":\"Barcelona\"}'"
+echo "        -H 'Content-Type: application/json' -d '{\"form_name\":\"unbounce_x\",\"platform\":\"WEB\",\"page_name\":\"unbounce/mba\",\"product_id\":123,\"user_province\":\"Barcelona\"}'"

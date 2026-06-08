@@ -54,18 +54,18 @@ def test_capacity_full_population_captures_everything():
 def test_grade_thresholds_are_ordered():
     y, scores = _sample()
     thr = evaluate.grade_thresholds(scores)
-    assert set(thr) == {"A", "B", "C"}
-    # A (top 10%) cutoff is the highest score, then B, then C.
-    assert thr["A"] >= thr["B"] >= thr["C"]
+    assert set(thr) == {"A", "B"}
+    # A (top 25%) cutoff is a higher score than B (top 50%).
+    assert thr["A"] >= thr["B"]
 
 
 def test_grade_of_boundaries():
-    thr = {"A": 0.9, "B": 0.7, "C": 0.4}
+    thr = {"A": 0.75, "B": 0.5}
     assert config.grade_of(0.95, thr) == "A"
-    assert config.grade_of(0.90, thr) == "A"  # inclusive lower edge
-    assert config.grade_of(0.80, thr) == "B"
-    assert config.grade_of(0.50, thr) == "C"
-    assert config.grade_of(0.10, thr) == "D"
+    assert config.grade_of(0.75, thr) == "A"  # inclusive lower edge
+    assert config.grade_of(0.60, thr) == "B"
+    assert config.grade_of(0.50, thr) == "B"  # inclusive lower edge
+    assert config.grade_of(0.10, thr) == "C"  # below B -> fallback C
 
 
 def test_grade_of_without_thresholds_is_none():
@@ -78,7 +78,7 @@ def test_grade_table_shape_and_lift():
     y, scores = _sample()
     base = y.mean()
     gt = evaluate.grade_table(y, scores, base, daily_volume=200)
-    assert list(gt["grade"]) == ["A", "B", "C", "D"]
+    assert list(gt["grade"]) == ["A", "B", "C"]
     assert np.allclose(gt["vs_azar"], gt["tasa_exito"] / base, equal_nan=True)
-    # The four bands' daily leads sum back to the segment volume.
+    # The three bands' daily leads sum back to the segment volume.
     assert np.isclose(gt["leads_dia"].sum(), 200, atol=1.0)

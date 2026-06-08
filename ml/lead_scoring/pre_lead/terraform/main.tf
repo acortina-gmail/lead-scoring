@@ -118,3 +118,37 @@ resource "google_monitoring_alert_policy" "pipeline_failed" {
 
   depends_on = [google_project_service.enabled]
 }
+
+# Success notification: a retrain finished — someone should review the new model and
+# decide whether to promote dev -> prod (the monthly cron retrains DEV only). Fires on
+# EVERY successful run of the pipeline (manual or scheduled), so reviewers are prompted.
+resource "google_monitoring_alert_policy" "pipeline_succeeded" {
+  count        = length(var.alert_emails) > 0 ? 1 : 0
+  project      = var.project_id
+  display_name = "Vertex training pipeline succeeded (lead-scoring)"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "PipelineJob state = SUCCEEDED"
+    condition_matched_log {
+      filter = <<-EOT
+        logName="projects/${var.project_id}/logs/aiplatform.googleapis.com%2Fpipeline_job_events"
+        jsonPayload.pipelineName="lead-scoring-train"
+        jsonPayload.state="PIPELINE_STATE_SUCCEEDED"
+      EOT
+    }
+  }
+
+  alert_strategy {
+    notification_rate_limit { period = "300s" }
+  }
+
+  notification_channels = [for c in google_monitoring_notification_channel.email : c.id]
+
+  documentation {
+    subject = "✅ Vertex training pipeline finished — review the model (lead-scoring)"
+    content = "A lead-scoring training PipelineJob reached PIPELINE_STATE_SUCCEEDED. Open Vertex AI > Pipelines: check the evaluate-<segment> report (capacity table, grades, lift) and validate-and-promote-<segment> (candidate vs current live). If it looks good, promote dev -> prod (ENV=prod ./deploy/02_run_pipeline.sh, or approve the prod gate in GitHub Actions)."
+  }
+
+  depends_on = [google_project_service.enabled]
+}

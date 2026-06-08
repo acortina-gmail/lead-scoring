@@ -69,11 +69,14 @@ live in `deploy/config.sh` and `src/leadscoring/config.py` — override via env 
 ## Scoring
 
 `POST /score` with the raw form/lead JSON; the service routes by `segmento`
-(or derives it from `form_name`), applies the saved preprocessing and returns:
+(or derives it from `form_name`; in the **real deploy** this switches to `platform`),
+applies the saved preprocessing and returns:
 
 ```json
-{ "segmento": "landing", "score": 0.071, "lift_vs_base": 3.0, "features_used": [...] }
+{ "segmento": "landing", "score": 0.071, "grade": "A", "lift_vs_base": 3.0, "features_used": [...] }
 ```
+
+`grade` is an A/B/C ranking band (A = top 25% by score, B = 25–50%, C = bottom 50%).
 
 Only the model's features are read from the payload; missing keys become `MISSING`/`NaN`,
 extra keys are ignored — robust to schema drift.
@@ -91,30 +94,34 @@ curl -s "$URL/health" -H "Authorization: Bearer $TOK"
 # {"status":"ok","segments":["landing","main"]}
 ```
 
-**Landing** (routed from `form_name` starting with `unbounce`; `utm_campaign` + `page_path`
-are *derived from* `page_location` at serve time — you don't send them):
+**Landing** (routed from `form_name` starting with `unbounce` — in the real deploy,
+from `platform`; `utm_campaign` is *derived from* `page_location` and `page_path` from
+`page_name`, so send `page_name` + `page_location`):
 
 ```bash
 curl -s -X POST "$URL/score" -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' \
-  -d '{"form_name":"unbounce_master",
+  -d '{"form_name":"unbounce_master","platform":"WEB",
+       "page_name":"unbounce/mba",
        "page_location":"https://obs.edu/landing/mba?utm_campaign=brand",
        "user_studies":"es-2","language_site":"es","ga_session_number":2}'
-# {"segmento":"landing","score":0.498,"base_rate":0.0237,"lift_vs_base":21.0,
+# {"segmento":"landing","score":0.498,"grade":"A","base_rate":0.0237,"lift_vs_base":21.0,
 #  "features_used":["ga_session_number","user_studies","language_site","utm_campaign","page_path"],
-#  "schema_version":1}
+#  "schema_version":2}
 ```
 
-**Main** (segment given explicitly via `segmento`):
+**Main** (segment given explicitly via `segmento`; uses `form_name` + `page_name` as
+features, so send them):
 
 ```bash
 curl -s -X POST "$URL/score" -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' \
-  -d '{"form_name":"web_contacto","segmento":"main","product_id":"mba-full",
-       "user_country":"ES","user_province":"Barcelona","user_studies":"es-3","ga_session_number":4}'
-# {"segmento":"main","score":0.534,"base_rate":0.1229,"lift_vs_base":4.34,
-#  "features_used":["ga_session_number","product_id","user_country","user_province","user_studies"],
-#  "schema_version":1}
+  -d '{"form_name":"web_contacto","platform":"WEB","segmento":"main","product_id":"mba-full",
+       "page_name":"producto/detalle/mba","user_country":"ES","user_province":"Barcelona",
+       "user_studies":"es-3","ga_session_number":4}'
+# {"segmento":"main","score":0.534,"grade":"B","base_rate":0.1229,"lift_vs_base":4.34,
+#  "features_used":["ga_session_number","product_id","user_country","user_province","user_studies","form_name","page_name"],
+#  "schema_version":2}
 ```
 
 > ⚠️ **`score` is a ranking score, not a calibrated probability.** `scale_pos_weight`
