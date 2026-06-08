@@ -3,7 +3,7 @@
 ML models that score leads along the **commercial funnel** for OBS, so the sales
 team can prioritise which leads to call first. Each funnel stage is its own
 self-contained model (own training pipeline, serving API, infra and deploy
-scripts) — they share the lead, not the code.
+scripts) — they share the lead, but not the code. 
 
 ## Repository layout
 
