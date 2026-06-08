@@ -1,16 +1,18 @@
 name: Deploy
 
-# On merge to main: re-run the quality gate, build both images (Cloud Build),
-# deploy the serving API to Cloud Run dev, then deploy to prod — which pauses for
-# a required-reviewer approval on the `prod` GitHub Environment (the dev->prod gate
-# from CLAUDE.md). Retraining is NOT here — it's train.yml.
+# Integration flow on push:
+#   push develop -> quality -> build -> train(dev, --wait) -> deploy serving (dev)
+#   push main    -> quality -> build -> [APPROVE prod] -> train(prod, --wait) -> deploy (prod)
+#
+# `train` runs the Vertex pipeline with --wait, so the job stays "running" until Vertex
+# finishes and goes GREEN only if it SUCCEEDED (red if it failed). The deploy then serves
+# the just-trained model deterministically. ENV + the prod approval are derived from the
+# branch. Retraining on a data cadence (monthly) lives in train.yml.
 #
 # Auth: service-account key JSON in the GCP_SA_KEY secret (see deploy/CICD.md).
-# GCP project/region/bucket come from deploy/config.sh defaults; override via
-# repo Variables (PROJECT_ID, REGION, BUCKET) if they ever change.
 on:
   push:
-    branches: [main]
+    branches: [develop, main]
     paths:
       - "ml/lead_scoring/pre_lead/**"
       - ".github/workflows/deploy.yml"
@@ -52,34 +54,41 @@ jobs:
       - name: Build + push images (Cloud Build)
         run: ./deploy/01_build_images.sh
 
-  deploy-dev:
+  train:
     needs: build
     runs-on: ubuntu-latest
+    # GitHub's max; --wait blocks until Vertex finishes, so this must be generous.
+    timeout-minutes: 360
+    # main -> prod Environment (required reviewer): PAUSES for approval BEFORE training
+    # prod. develop -> dev (no protection): runs straight through.
+    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     env:
-      ENV: dev
+      ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+      PYTHON: python
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - uses: google-github-actions/setup-gcloud@v2
-      - name: Deploy serving to Cloud Run (dev)
-        run: ./deploy/03_deploy_serving.sh
+      - name: Train on Vertex and wait for it to finish
+        run: ./deploy/02_run_pipeline.sh --wait
 
-  deploy-prod:
-    needs: deploy-dev
+  deploy:
+    needs: train
     runs-on: ubuntu-latest
-    # Pauses for a required reviewer on the `prod` Environment — the dev->prod gate.
-    environment: prod
+    # No `environment` here on purpose: the single prod approval already happened on the
+    # `train` job, so the deploy doesn't ask again. Serves the model just trained above.
     env:
-      ENV: prod
+      ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - uses: google-github-actions/setup-gcloud@v2
-      - name: Deploy serving to Cloud Run (prod)
-        # Reuses the same image (env injected via Cloud Run env vars). Serves
-        # models/prod/live — train+promote prod first via train.yml.
+      - name: Deploy serving to Cloud Run
         run: ./deploy/03_deploy_serving.sh

@@ -1,12 +1,12 @@
 name: Train
 
-# Manual retrain. Compiles + submits the Vertex AI pipeline, which writes
-# candidate models and promotes them to live only if the soft gate passes
-# (gate logic lives in the pipeline, not here). Kept separate from deploy.yml
-# because a Vertex run is slow and costly — you don't want it on every merge.
-#
-# Serving auto-reloads a freshly-promoted live model within ~5 min (no redeploy
-# needed); POST /reload forces it immediately.
+# Standalone retrains on a DATA cadence (not tied to a code push — that's deploy.yml):
+#   - workflow_dispatch: ad-hoc manual retrain, pick dev/prod (prod needs approval).
+#   - schedule (monthly): retrain PROD on the refreshed table; the in-pipeline SOFT
+#     gate decides promotion and the emails prompt a human to review.
+# Compiles + submits the Vertex pipeline with --wait, so the run reflects the real
+# outcome (green/red). Serving auto-reloads a freshly-promoted live model within ~5 min
+# (no redeploy); POST /reload forces it immediately.
 on:
   workflow_dispatch:
     inputs:
@@ -16,10 +16,11 @@ on:
         options: [dev, prod]
         default: dev
   schedule:
-    # Monthly retrain at 03:00 UTC on the 1st — DEV only. A cron can't approve the
-    # prod environment gate, so prod stays a manual/reviewed promotion. Schedule it a
-    # few hours AFTER Dataform refreshes the table so it trains on the new data. A
-    # success email (Cloud Monitoring) then prompts someone to review + decide prod.
+    # Monthly retrain at 03:00 UTC on the 1st — targets PROD. A cron can't approve the
+    # prod Environment, so this scheduled run is NOT gated by a human: the in-pipeline
+    # SOFT gate (candidate->live only if it doesn't regress) is the safety, and the
+    # success/failure emails (Cloud Monitoring) prompt someone to review. Schedule it a
+    # few hours AFTER Dataform refreshes the table so it trains on the new data.
     - cron: "0 3 1 * *"
 
 defaults:
@@ -29,12 +30,16 @@ defaults:
 jobs:
   train:
     runs-on: ubuntu-latest
-    # prod retrains also require approval via the prod environment; dev has no
-    # protection rules (GitHub auto-creates it on first use).
-    environment: ${{ inputs.env == 'prod' && 'prod' || 'dev' }}
+    # GitHub's max; --wait blocks until Vertex finishes.
+    timeout-minutes: 360
+    # Approval ONLY for a MANUAL prod retrain (required reviewer on the prod Environment).
+    # The cron and dev runs use the `dev` Environment (no protection) so they don't hang.
+    # NOTE: a scheduled run trains PROD (ENV below) while GitHub shows the `dev`
+    # Environment label — the label only governs protection rules, not where it trains.
+    environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.env == 'prod') && 'prod' || 'dev' }}
     env:
-      # On a scheduled run there are no inputs -> default to dev.
-      ENV: ${{ inputs.env || 'dev' }}
+      # schedule -> prod; manual -> the chosen input; otherwise dev.
+      ENV: ${{ github.event_name == 'schedule' && 'prod' || inputs.env || 'dev' }}
       PYTHON: python
     steps:
       - uses: actions/checkout@v4
@@ -45,5 +50,5 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - uses: google-github-actions/setup-gcloud@v2
-      - name: Compile + submit Vertex training pipeline
-        run: ./deploy/02_run_pipeline.sh
+      - name: Compile + submit Vertex training pipeline (and wait)
+        run: ./deploy/02_run_pipeline.sh --wait

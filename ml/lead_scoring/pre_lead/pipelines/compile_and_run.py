@@ -27,6 +27,10 @@ def main() -> None:
     p.add_argument("--daily-volume", type=int, default=250,
                    help="avg total leads/day; split per segment by training-row share "
                         "to scale the capacity table's Leads/dia + Conversiones/dia.")
+    p.add_argument("--wait", action="store_true",
+                   help="block until the Vertex pipeline reaches a terminal state; exit "
+                        "non-zero if it FAILED. Lets CI gate (green only when training "
+                        "actually succeeded) and chain a deploy after it.")
     p.add_argument("--training-image", default=None)
     p.add_argument("--env", default=os.environ.get("ENV", config.ENV),
                    help="logical environment (dev|prod) — namespaces the GCS model paths")
@@ -78,6 +82,13 @@ def main() -> None:
     )
     job.submit()
     print(f"submitted Vertex pipeline job ({env}):", job.resource_name)
+
+    if args.wait:
+        # Block until the pipeline finishes. wait() raises RuntimeError if it ends in an
+        # error state, so a failed train propagates a non-zero exit -> the CI job goes red.
+        print("waiting for the pipeline to finish (this blocks until Vertex is done)...")
+        job.wait()
+        print(f"pipeline SUCCEEDED ({env}):", job.resource_name)
 
 
 if __name__ == "__main__":
