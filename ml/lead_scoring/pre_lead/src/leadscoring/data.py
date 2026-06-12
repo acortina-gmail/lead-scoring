@@ -16,7 +16,9 @@ def load(table_ref: str | None = None, limit: int | None = None) -> pd.DataFrame
     from google.cloud import bigquery
 
     table_ref = table_ref or config.BQ_TABLE_REF
-    client = bigquery.Client(project=config.PROJECT_ID)
+    # location is REQUIRED for non-US datasets (EU here) — without it the client
+    # submits the query in "US" and fails with "Dataset not found in location US".
+    client = bigquery.Client(project=config.PROJECT_ID, location=config.BQ_LOCATION)
     sql = f"SELECT * FROM `{table_ref}`"
     if limit:
         sql += f" LIMIT {int(limit)}"

@@ -16,16 +16,25 @@ import os
 # identical. Default 'dev' so an un-set ENV can never overwrite prod by accident.
 ENV = os.environ.get("ENV", "dev")
 
-# --- GCP ---------------------------------------------------------------------
-PROJECT_ID = os.environ.get("PROJECT_ID", "test-ml-flow-484314")
-REGION = os.environ.get("REGION", "us-central1")
-BUCKET = os.environ.get("BUCKET", "bq-pfu-ga4-leadscoring")            # gs://<BUCKET>
-AR_REPO = os.environ.get("AR_REPO", "lead-scoring")                     # Artifact Registry repo
+# --- Deployment target (THE single place to retarget) ------------------------
+# Everything project-specific lives in THIS block. deploy/config.sh derives its
+# values from here (no second copy), Terraform reads them via the TF_VAR_* that
+# config.sh exports, and the Vertex components read this same config.py baked into
+# the training image. To point at another GCP project, edit here only. Every value
+# stays env-overridable for one-off runs (e.g. PROJECT_ID=other ./deploy/...).
+PROJECT_ID = os.environ.get("PROJECT_ID", "bq-pfu-ga4")
+REGION = os.environ.get("REGION", "europe-west1")  # must match the BQ data location's continent
+BUCKET = os.environ.get("BUCKET", "bq-pfu-ga4-leadscoring")  # gs://<BUCKET> — GLOBALLY unique
+AR_REPO = os.environ.get("AR_REPO", "lead-scoring")          # Artifact Registry repo
 
 # --- BigQuery source ---------------------------------------------------------
 BQ_DATASET = os.environ.get("BQ_DATASET", "dataset")
 BQ_TABLE = os.environ.get("BQ_TABLE", "lead_scoring_train")
 BQ_TABLE_REF = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}"
+# BigQuery job location. The client defaults to "US"; an EU dataset MUST be queried
+# with location="EU" (else "Dataset ... was not found in location US"). Keep this in
+# step with REGION (EU data -> a europe-* region).
+BQ_LOCATION = os.environ.get("BQ_LOCATION", "EU")
 
 # --- Schema contract ---------------------------------------------------------
 # Columns that must NEVER be used as features (identifiers + target + routing).

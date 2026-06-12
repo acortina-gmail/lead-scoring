@@ -28,11 +28,14 @@ from kfp.dsl import (
     Output,
 )
 
-# Base image with the leadscoring library. Overridable so compile_and_run can inject
-# the Artifact Registry path it just built.
+from leadscoring import config as _config
+
+# Base image with the leadscoring library. compile_and_run injects the freshly-built
+# Artifact Registry path via TRAINING_IMAGE; the fallback is DERIVED from config so it
+# never hardcodes a project/region (single source of truth = leadscoring.config).
 BASE_IMAGE = os.environ.get(
     "TRAINING_IMAGE",
-    "europe-west1-docker.pkg.dev/bq-pfu-ga4/lead-scoring/training-base:latest",
+    f"{_config.REGION}-docker.pkg.dev/{_config.PROJECT_ID}/{_config.AR_REPO}/training-base:latest",
 )
 
 

@@ -63,8 +63,10 @@ ENV=dev ./deploy/03_deploy_serving.sh
 
 `ENV` (default `dev`) selects the environment — see
 [Environments & model promotion](#environments--model-promotion). Other defaults
-(project, region, bucket `bq-pfu-ga4-leadscoring`, Artifact Registry repo `lead-scoring`)
-live in `deploy/config.sh` and `src/leadscoring/config.py` — override via env vars or edit in place.
+(project `bq-pfu-ga4`, region `europe-west1`, bucket `bq-pfu-ga4-leadscoring`, AR repo
+`lead-scoring`, `BQ_LOCATION=EU`) live in **one place**, the "Deployment target" block of
+`src/leadscoring/config.py`. `deploy/config.sh` and Terraform read from it (no duplication)
+— override any value via env vars, or edit that block to retarget another project.
 
 ## Scoring
 

@@ -69,16 +69,21 @@ bq show test-ml-flow-484314:dataset.lead_scoring_train
 ```
 
 ### Configuración (revisa antes de empezar)
-Ya está todo apuntando al proyecto correcto. Solo revísalo:
+**Fuente única de la verdad: `src/leadscoring/config.py`** (bloque "Deployment target").
+Ahí viven project / region / bucket / ar_repo / dataset / `BQ_LOCATION`. No hay copias:
 
 | Dónde | Qué |
 |---|---|
-| `terraform/terraform.tfvars` | project, region, **bucket**, ar_repo, `alert_emails` |
-| `deploy/config.sh` | mismos valores (los scripts leen de aquí) |
-| `src/leadscoring/config.py` | mismos valores + features por segmento |
+| `src/leadscoring/config.py` | **único sitio a editar** — project/region/bucket/dataset/BQ_LOCATION + features |
+| `deploy/config.sh` | los **lee** de `config.py` (no duplica) y exporta `TF_VAR_*` para Terraform |
+| `terraform/terraform.tfvars` | solo `alert_emails` (lo demás llega por `TF_VAR_*`) |
 
-⚠️ El **nombre del bucket** (`bq-pfu-ga4-leadscoring`) es global y único. Si quieres
-otro, cámbialo **en los 3 sitios** a la vez (p.ej. `test-ml-flow-484314-leadscoring`).
+Todo es **override-able por env var** (`PROJECT_ID=otro REGION=... ./deploy/...sh`).
+
+⚠️ El **nombre del bucket** es global y único. Para cambiarlo edita **solo** `BUCKET`
+en `config.py`; bash y Terraform lo cogen de ahí.
+⚠️ **`REGION` debe coincidir con la ubicación de BigQuery.** Tabla en `EU` →
+`europe-west1` y `BQ_LOCATION="EU"` (ya configurado).
 
 ---
 
@@ -88,14 +93,16 @@ otro, cámbialo **en los 3 sitios** a la vez (p.ej. `test-ml-flow-484314-leadsco
 Crea las APIs, el bucket de GCS, el repo de imágenes (Artifact Registry) y la alerta de
 email si falla el pipeline.
 
+Usa el wrapper `deploy/tf.sh` (sourcea `config.sh` → inyecta project/region/bucket
+desde `config.py` como `TF_VAR_*`, así Terraform no tiene valores duplicados):
+
 ```bash
-cd terraform
-terraform init        # descarga el provider de Google (1ª vez)
-terraform plan        # opcional: revisa lo que va a crear
-terraform apply       # escribe 'yes' para confirmar
-cd ..
+./deploy/tf.sh init        # descarga el provider de Google (1ª vez)
+./deploy/tf.sh plan        # opcional: revisa lo que va a crear
+./deploy/tf.sh apply       # escribe 'yes' para confirmar
 ```
-Es idempotente (puedes re-ejecutarlo sin romper nada).
+Es idempotente (puedes re-ejecutarlo sin romper nada). Si prefieres `terraform`
+a pelo, **primero** `source deploy/config.sh` y luego `terraform -chdir=terraform ...`.
 
 > Alternativa sin Terraform: `./deploy/00_setup_gcp.sh` hace lo mismo con gcloud
 > (pero **sin** la alerta de fallo de pipeline, que solo está en Terraform).

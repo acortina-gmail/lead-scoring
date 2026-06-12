@@ -8,17 +8,20 @@ default compute SA already has the access the pipeline/serving need).
 Replaces `deploy/00_setup_gcp.sh`.
 
 ```bash
-cd terraform
-terraform init
-terraform plan      # review
-terraform apply     # create bucket + AR repo + enable APIs
+# from the model root (ml/lead_scoring/pre_lead):
+./deploy/tf.sh init
+./deploy/tf.sh plan      # review
+./deploy/tf.sh apply     # create bucket + AR repo + enable APIs
 
-# then back at repo root:  ./deploy/01_build_images.sh -> 02 -> 03
+# then:  ./deploy/01_build_images.sh -> 02 -> 03
 ```
 
 State is **local** (`terraform.tfstate`, gitignored). To share/lock later, add a
 GCS backend in `versions.tf` and `terraform init -migrate-state`.
 
-Values in `terraform.tfvars` must match `src/leadscoring/config.py` /
-`deploy/config.sh` (project, region, bucket, ar_repo). Region must equal the
-BigQuery data location (`us-central1`).
+`project_id` / `region` / `bucket` / `ar_repo` are NOT in `terraform.tfvars` — they
+come from the single source of truth (`src/leadscoring/config.py`) via the `TF_VAR_*`
+env vars that `deploy/config.sh` exports (`deploy/tf.sh` sources it for you). Only
+`alert_emails` lives in `terraform.tfvars`. Region must equal the BigQuery data
+location (EU → `europe-west1`). Running bare `terraform` without sourcing
+`config.sh` first will just prompt for the missing vars (safe, not wrong values).
